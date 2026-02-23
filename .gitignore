@@ -1,0 +1,9 @@
+*.zip
+*.tar
+*.pth
+*.bin
+*.pkl
+data/        # 데이터셋 폴더
+venv/        # 가상환경 폴더
+.idea/       # 파이참 설정sam3_good_adapted.pt
+sam3_good_adapted.pt
