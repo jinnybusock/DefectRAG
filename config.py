@@ -1,0 +1,1 @@
+sam3_checkpoint = r"C:\Users\hjchung\Desktop\sam3\checkpoints\sam3.pt"

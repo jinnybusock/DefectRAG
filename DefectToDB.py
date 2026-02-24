@@ -10,13 +10,13 @@ import SAM3_Adaptation
 # 기존 작성하신 환경 설정 및 모델 로드 활용
 from project_env import initialize_project
 from sam3 import build_sam3_image_model
+from config import sam3_checkpoint
 
 # 1. 환경 초기화 및 모델 로드
 initialize_project()
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # SAM3 로드 (학습된 가중치 적용)
-sam3_checkpoint = r"C:\Users\hjchung\Desktop\sam3\checkpoints\sam3.pt"
 model_sam3 = build_sam3_image_model(checkpoint_path=sam3_checkpoint).to(device)
 
 # 학습시킨 가중치 로드
