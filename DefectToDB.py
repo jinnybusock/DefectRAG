@@ -5,12 +5,11 @@ import psycopg2
 from PIL import Image
 from pgvector.psycopg2 import register_vector
 import cv2
-import SAM3_Adaptation
-
-# 기존 작성하신 환경 설정 및 모델 로드 활용
 from project_env import initialize_project
 from sam3 import build_sam3_image_model
 from config import sam3_checkpoint
+import torch.nn.functional as F
+import math
 
 # 1. 환경 초기화 및 모델 로드
 initialize_project()
@@ -37,11 +36,15 @@ model_dinov2.eval()
 
 
 class SimpleBatch:
-    def __init__(self, data):
-        self.img_batch = data
+    def __init__(self, img_batch):
+        self.img_batch = img_batch
 
-    def __len__(self):
-        return len(self.img_batch)
+        # SAM3 모델의 num_frames== 1 검사 통과하기 위해 요소 하나를 넣음
+        self.find_inputs= [None]
+
+    def to(self, device):
+        self.img_batch = self.img_batch.to(device)
+        return self
 
 def get_bbox_from_mask(mask_tensor, threshold=0.5):
     """SAM3 출력 마스크에서 결함 부위의 Bounding Box 좌표 추출"""
@@ -87,43 +90,28 @@ def process_and_save_to_db(folder_path, defect_label):
         img_np= np.array(input_img_res) / 255.0     # 0~1 범위로 정규화
         input_tensor = torch.as_tensor(np.array(input_img_res)).permute(2, 0, 1).float().unsqueeze(0).to(device)
 
-        with torch.no_grad():
-            # try:
-                # SAM3를 통해 마스크 생성
-                output = model_sam3(SimpleBatch(input_tensor))
+        # SAM3 모델 요구 사양에 맞춘 강제 리사이징 전처리
+        target_res= 1024
 
-                # 마스크 텐서 추출 (모델 구조에 따라 'masks' 또는 'low_res_masks' 확인 필요)
-                # mask_tensor = output.get('masks') or output.get('low_res_masks')
+        for m in model_sam3.modules():
+            if hasattr(m, 'freqs_cis') and m.freqs_cis is not None:
+                num_patches = m.freqs_cis.shape[0]
+                side= int(math.sqrt(num_patches))
+                target_res= side* 16
+                break
 
-                # if mask_tensor is not None:
-                #    bbox_info = get_bbox_from_mask(mask_tensor)
+        if input_tensor.shape[-1] != target_res:
+            print(f" [전처리] 이미지 크기를 모델 최적 해상도({target_res})로 변경합니다.")
 
-                 #   if bbox_info:
-                  #      x, y, w, h = bbox_info
-                        # 원본 이미지 크기에 맞게 좌표 역산 필요 시 수행 (여기서는 1024 기준 crop)
-                   #     cropped_patch = input_img_res.crop((x, y, x + w, y + h))
+            input_tensor= F.interpolate(
+                input_tensor,
+                size=(target_res, target_res),
+                mode="bilinear",
+                align_corners=False
+            )
 
-                        # DINOv2 특징 추출
-                    #    feature_vec = extract_dinov2_feature(cropped_patch)
-
-                        # DB 저장
-                     #   cur.execute("""
-                      #      INSERT INTO defect_features
-                       #     (defect_type, feature_vector, bbox_x, bbox_y, bbox_w, bbox_h, image_path)
-                        #    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        #""", (defect_label, feature_vec, x, y, w, h, full_path))
-                        #saved_count += 1
-                        #print(f"✅ {img_name} 저장 완료")
-
-                    #else:
-                     #   print(f"⚠️ {img_name}: 결함 마스크가 탐지되지 않음")
-
-                #else:
-                 #   print(f"⚠️ {img_name}: 모델 출력에서 마스크를 찾을 수 없음")
-
-            #except AssertionError as e:
-             #   print(f"❌ {img_name}: 모델 입력 규격 불일치 (1024 해상도 확인 필요)")
-              #  continue
+        # SimpleBatch 객체 생성 및 모델 추론
+        batch_data= SimpleBatch(input_tensor)
 
     conn.commit()
     cur.close()
