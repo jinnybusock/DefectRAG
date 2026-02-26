@@ -41,6 +41,7 @@ from project_env import initialize_project
 from config import bpe_path
 from config import sam3_checkpoint
 import sam3.model.vitdet as vitdet
+import math
 
 target_size= 2224
 
@@ -183,42 +184,37 @@ def run_adaptation():
 
             # print(f"DEBUG: img_batch shape: {input_data.img_batch.shape}")
 
-            target_res= 2528
-
-            if input_data.img_batch.shape[-1:]!= target_size:
-                print(f" [전처리] 모델 요구 사양에 맞춰 {input_data.img_batch.shape[-2:]} -> ({target_res}, {target_res})로 강제 고정합니다.")
-
-                input_data.img_batch= F.interpolate(
-                    input_data.img_batch,
-                    size= (target_res, target_res),
-                    mode="bilinear",
-                    align_corners=False
-                )
-
             try:
-                # 자동 혼합 정밀도(Autocast) 사용 (SAM3 내부 RoPE 연산 오류 방지)
-                with torch.amp.autocast('cuda', dtype= torch.bfloat16):
-                    # 모델 추론
-                    output = model(input_data)
+                # 모델 내부의 RoPE(freq_cis)에서 기대하는 패치ㅣ 개수 찾기
+                # 보통 self.vision_backbone.truck에 들어있음
+                target_freqs= None
+                for m in model.modules():
+                    if hasattr(m, 'freqs_cis') and m.freqs_cis is not None:
+                        target_freqs = m.freqs_cis
+                        break
 
-                target_feat= None
-                if isinstance(output, dict):
-                    for key in ['high_res_feats', 'vision_features', 'image_embed']:
-                        if key in output.get(key) is not None:
-                            target_feat = output[key]
-                            break
+                if target_freqs is not None:
+                    num_patches = target_freqs.shape[0]
+                    side= int(math.sqrt(num_patches))
+                    target_res= side* 16
 
-                if target_feat is not None:
-                    # 특징값 복원 학습 (정상 패턴 암기)
-                    loss = nn.MSELoss()(target_feat, target_feat.detach().clone())
-                    loss.backward()
-                    optimizer.step()
+                    if input_data.img_batch.shape[-1] != target_res:
+                        print(f" [강제 전처리] 모델 사양({target_res}px)에 맞춰 리사이징 진행")
+                        input_data.img_batch= F.interpolate(
+                            input_data.img_batch,
+                            size= (target_res, target_res),
+                            mode="bilinear",
+                            align_corners=False
+                        )
 
-                    if i% 10==0:
-                        print(f"Epoch {epoch+1} [{i}/{len(loader)}] Loss: {loss.item():.6f}")
-
-                    else:
-                        print("⚠️ 유효한 특징량을 찾을 수 없습니다.")
+                else:
+                    standard_res= 1024
+                    input_data.img_batch= F.interpolate(
+                        input_data.img_batch,
+                        size= (standard_res, standard_res),
+                        mode="bilinear",
+                        align_corners=False
+                    )
 
             except AssertionError:
                 print(f"❌ RoPE 해상도 불일치 발생!")
@@ -235,7 +231,6 @@ def run_adaptation():
                             print(f" - [발견] 모듈 위치: {name}")
                             print(f" - [발견] RoPE 형상: {freqs.shape}")
 
-                            import math
                             # SAM 계열은 보통 (H*W/256, D) 형태를 가집니다.
                             # 만약 shape[0] 이 4096이면 64x64 그리드 -> 1024x1024 해상도
                             num_patches= freqs.shape[0]
